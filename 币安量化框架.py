@@ -13,6 +13,9 @@ from binance.client import Client
 from binance.enums import *
 import logging
 
+from admin_tools.db_manager import init_db, get_allowed_pairs
+from admin_tools.ui_components import AdminPanel
+
 # 配置日志
 logging.basicConfig(level=logging.INFO, format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
@@ -22,12 +25,21 @@ class TradingEngine:
         self.root = root
         self.root.title("Athena Trading Engine - An Integrated Tool for Backtesting & Paper Trading & Live Trading")
         self.root.geometry("1400x900")
-        
+
+        init_db()
+        self.current_user_role = "admin"  # 实际项目中应结合登录信息设置
+        self.master_api_key = os.environ.get("BINANCE_MASTER_API_KEY", "你的主账户API")
+        self.master_api_secret = os.environ.get("BINANCE_MASTER_API_SECRET", "你的主账户Secret")
+
+        self.admin_panel_window = None
+        self.admin_panel = None
+
         # 引擎模式：0-回测，1-实测，2-实盘
         self.engine_mode = 0
-        
+
         # 公共数据
-        self.symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "ADAUSDT"]
+        self.default_symbols = ["BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT", "ADAUSDT"]
+        self.symbols = get_allowed_pairs() or self.default_symbols
         self.intervals = ["1m", "3m", "5m", "15m", "30m", "1h", "4h", "1d", "1w"]
         self.data_queue = deque(maxlen=10000)
         self.df = pd.DataFrame()
@@ -53,7 +65,11 @@ class TradingEngine:
         
         self.live_btn = ttk.Button(engine_frame, text="实盘引擎", command=lambda: self.switch_engine(2))
         self.live_btn.pack(side="left", padx=5)
-        
+
+        if self.current_user_role == "admin":
+            self.admin_btn = ttk.Button(engine_frame, text="管理后台", command=self.open_admin_panel)
+            self.admin_btn.pack(side="left", padx=5)
+
         # 创建公共组件
         self.create_common_widgets()
         
@@ -74,9 +90,11 @@ class TradingEngine:
         row1_frame.pack(fill="x", padx=10, pady=5)
         
         ttk.Label(row1_frame, text="交易对:").pack(side="left", padx=5)
-        self.symbol_var = tk.StringVar(value="BTCUSDT")
-        symbol_combo = ttk.Combobox(row1_frame, textvariable=self.symbol_var, values=self.symbols, width=15)
-        symbol_combo.pack(side="left", padx=5)
+        initial_symbol = self.symbols[0] if self.symbols else ""
+        self.symbol_var = tk.StringVar(value=initial_symbol)
+        self.symbol_combo = ttk.Combobox(row1_frame, textvariable=self.symbol_var, values=self.symbols, width=15)
+        self.symbol_combo.pack(side="left", padx=5)
+        ttk.Button(row1_frame, text="刷新交易对", command=lambda: self.refresh_allowed_pairs(show_message=True)).pack(side="left", padx=5)
         
         ttk.Label(row1_frame, text="时间范围:").pack(side="left", padx=5)
         self.start_date_var = tk.StringVar(value=(datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d %H:%M:%S"))
@@ -205,7 +223,42 @@ class TradingEngine:
         # 订单列表
         self.order_list_frame = ttk.LabelFrame(self.root, text="交易订单列表")
         self.order_list_frame.pack(fill="x", padx=10, pady=5)
-        
+
+    def open_admin_panel(self):
+        if self.admin_panel_window and self.admin_panel_window.winfo_exists():
+            self.admin_panel_window.lift()
+            return
+
+        self.admin_panel_window = tk.Toplevel(self.root)
+        self.admin_panel_window.title("管理后台")
+        self.admin_panel = AdminPanel(
+            self.admin_panel_window,
+            self.master_api_key,
+            self.master_api_secret,
+            on_pairs_changed=self.refresh_allowed_pairs,
+        )
+        self.admin_panel_window.protocol("WM_DELETE_WINDOW", self.close_admin_panel)
+
+    def close_admin_panel(self):
+        if self.admin_panel_window and self.admin_panel_window.winfo_exists():
+            self.admin_panel_window.destroy()
+        self.admin_panel_window = None
+        self.admin_panel = None
+
+    def refresh_allowed_pairs(self, show_message: bool = False):
+        pairs = get_allowed_pairs()
+        if not pairs:
+            pairs = self.default_symbols
+
+        self.symbols = pairs
+        if hasattr(self, "symbol_combo"):
+            current_symbol = self.symbol_var.get()
+            self.symbol_combo["values"] = self.symbols
+            if current_symbol not in self.symbols and self.symbols:
+                self.symbol_var.set(self.symbols[0])
+        if show_message:
+            messagebox.showinfo("提示", "交易对列表已刷新")
+
     def create_backtest_widgets(self):
         # 回测专用控制按钮
         self.backtest_control_frame = ttk.LabelFrame(self.root, text="回测控制")
